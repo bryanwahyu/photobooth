@@ -1,5 +1,3 @@
-"use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FILTERS, FRAME_COLORS, filterById } from "@/lib/filters";
 import type { PackageId } from "@/lib/payment/types";
@@ -370,10 +368,7 @@ export default function StripEditor({
 
       {/* print-only sheet */}
       <div id="print-area" className="hidden print:block">
-        {printUrl && (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={printUrl} alt="Photobooth strip" />
-        )}
+        {printUrl && <img src={printUrl} alt="Photobooth strip" />}
       </div>
     </>
   );

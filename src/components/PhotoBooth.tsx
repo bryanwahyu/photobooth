@@ -1,5 +1,3 @@
-"use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import Checkout from "@/components/Checkout";
 import StripEditor from "@/components/StripEditor";
@@ -232,7 +230,6 @@ export default function PhotoBooth() {
                   >
                     <div className="h-14 w-20 bg-neutral-800">
                       {previewStill && (
-                        /* eslint-disable-next-line @next/next/no-img-element */
                         <img
                           src={previewStill}
                           alt={f.label}

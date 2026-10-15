@@ -1,6 +1,11 @@
+import { createFileRoute } from "@tanstack/react-router";
 import PhotoBooth from "@/components/PhotoBooth";
 
-export default function Home() {
+export const Route = createFileRoute("/")({
+  component: Home,
+});
+
+function Home() {
   return (
     <main className="flex flex-1 flex-col">
       <PhotoBooth />

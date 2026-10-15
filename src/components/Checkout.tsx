@@ -1,6 +1,5 @@
-"use client";
-
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import {
   METHODS,
   PACKAGES,
@@ -11,82 +10,87 @@ import {
 
 const rupiah = (n: number) => `Rp${n.toLocaleString("id-ID")}`;
 
+const orderKey = (id: string) => ["order", id] as const;
+
+async function readJson(res: Response) {
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error ?? "Permintaan gagal");
+  return data;
+}
+
 type Props = {
   onPaid: (info: { packageId: PackageId; orderId: string; receipt: string }) => void;
 };
 
 export default function Checkout({ onPaid }: Props) {
+  const queryClient = useQueryClient();
+
   const [packageId, setPackageId] = useState<PackageId>("fun");
   const [methodId, setMethodId] = useState<MethodId>("qris");
-  const [order, setOrder] = useState<PublicOrder | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [orderId, setOrderId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const paidRef = useRef(false);
 
   const pkg = PACKAGES.find((p) => p.id === packageId)!;
 
-  const createOrder = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ packageId, methodId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Gagal membuat order");
-      setOrder(data as PublicOrder);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Gagal membuat order");
-    } finally {
-      setLoading(false);
-    }
-  }, [methodId, packageId]);
+  const create = useMutation({
+    mutationFn: async (): Promise<PublicOrder> =>
+      readJson(
+        await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ packageId, methodId }),
+        }),
+      ),
+    onSuccess: (order) => {
+      queryClient.setQueryData(orderKey(order.id), order);
+      setOrderId(order.id);
+    },
+  });
 
-  /* poll order status */
-  useEffect(() => {
-    if (!order || order.status !== "pending") return;
-    const id = window.setInterval(async () => {
-      try {
-        const res = await fetch(`/api/orders/${order.id}`, { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as PublicOrder;
-        setOrder(data);
-      } catch {
-        /* keep polling */
-      }
-    }, 2000);
-    return () => window.clearInterval(id);
-  }, [order]);
+  /* Status polling: Query stops on its own once the order leaves `pending`. */
+  const orderQuery = useQuery({
+    queryKey: orderKey(orderId ?? ""),
+    enabled: orderId !== null,
+    queryFn: async (): Promise<PublicOrder> => readJson(await fetch(`/api/orders/${orderId}`)),
+    refetchInterval: (query) => (query.state.data?.status === "pending" ? 2000 : false),
+  });
+
+  const simulate = useMutation({
+    mutationFn: async (): Promise<PublicOrder> =>
+      readJson(await fetch(`/api/orders/${orderId}/simulate`, { method: "POST" })),
+    onSuccess: (order) => queryClient.setQueryData(orderKey(order.id), order),
+  });
+
+  const order = orderQuery.data ?? null;
+  const error = create.error?.message ?? simulate.error?.message ?? null;
+
+  const reset = () => {
+    paidRef.current = false;
+    setOrderId(null);
+    create.reset();
+    simulate.reset();
+  };
 
   /* countdown ticker */
   useEffect(() => {
-    if (!order || order.status !== "pending") return;
+    if (order?.status !== "pending") return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [order]);
+  }, [order?.status]);
 
   /* hand control back once paid */
   useEffect(() => {
     if (order?.status === "paid" && order.receipt && !paidRef.current) {
       paidRef.current = true;
+      const receipt = order.receipt;
       const t = window.setTimeout(
-        () => onPaid({ packageId: order.packageId, orderId: order.id, receipt: order.receipt! }),
+        () => onPaid({ packageId: order.packageId, orderId: order.id, receipt }),
         1200,
       );
       return () => window.clearTimeout(t);
     }
   }, [onPaid, order]);
-
-  const simulate = async () => {
-    if (!order) return;
-    const res = await fetch(`/api/orders/${order.id}/simulate`, { method: "POST" });
-    const data = await res.json();
-    if (res.ok) setOrder((prev) => (prev ? { ...prev, ...data } : data));
-    else setError(data.error ?? "Simulasi gagal");
-  };
 
   const remaining = order ? Math.max(0, order.expiresAt - now) : 0;
   const mmss = `${String(Math.floor(remaining / 60000)).padStart(2, "0")}:${String(
@@ -115,7 +119,7 @@ export default function Checkout({ onPaid }: Props) {
           <div className="grid gap-3 rounded-xl border border-red-800/60 bg-red-900/20 p-6 text-center">
             <p className="font-semibold text-red-300">Order kedaluwarsa</p>
             <button
-              onClick={() => setOrder(null)}
+              onClick={reset}
               className="rounded-lg bg-pink-500 px-4 py-2 text-sm font-semibold text-white"
             >
               Buat order baru
@@ -125,7 +129,6 @@ export default function Checkout({ onPaid }: Props) {
           <>
             {order.qrDataUrl && (
               <div className="grid justify-items-center gap-3">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={order.qrDataUrl}
                   alt="QR pembayaran"
@@ -139,7 +142,9 @@ export default function Checkout({ onPaid }: Props) {
 
             {order.vaNumber && (
               <div className="grid gap-2 rounded-xl border border-neutral-800 bg-neutral-800/50 p-4 text-center">
-                <p className="text-xs uppercase tracking-wider text-neutral-500">Nomor Virtual Account</p>
+                <p className="text-xs uppercase tracking-wider text-neutral-500">
+                  Nomor Virtual Account
+                </p>
                 <p className="font-mono text-xl tracking-wider">{order.vaNumber}</p>
                 <button
                   onClick={() => navigator.clipboard?.writeText(order.vaNumber!)}
@@ -164,14 +169,16 @@ export default function Checkout({ onPaid }: Props) {
               <p className="text-center text-xs text-neutral-500">
                 Menunggu pembayaran... status dicek otomatis tiap 2 detik.
               </p>
+              {error && <p className="text-center text-sm text-red-400">{error}</p>}
               <button
-                onClick={simulate}
-                className="rounded-lg border border-dashed border-amber-500/60 px-4 py-2 text-sm text-amber-300"
+                onClick={() => simulate.mutate()}
+                disabled={simulate.isPending}
+                className="rounded-lg border border-dashed border-amber-500/60 px-4 py-2 text-sm text-amber-300 disabled:opacity-50"
               >
                 Simulasi Bayar (demo)
               </button>
               <button
-                onClick={() => setOrder(null)}
+                onClick={reset}
                 className="text-xs text-neutral-500 underline underline-offset-2"
               >
                 Batal, pilih paket lain
@@ -224,7 +231,9 @@ export default function Checkout({ onPaid }: Props) {
                 <span className="block text-sm font-semibold">{m.name}</span>
                 <span className="block text-xs text-neutral-500">{m.hint}</span>
               </span>
-              <span className="text-lg">{m.group === "va" ? "🏦" : m.group === "qr" ? "🔳" : "📱"}</span>
+              <span className="text-lg">
+                {m.group === "va" ? "🏦" : m.group === "qr" ? "🔳" : "📱"}
+              </span>
             </button>
           ))}
         </div>
@@ -233,11 +242,11 @@ export default function Checkout({ onPaid }: Props) {
       {error && <p className="text-center text-sm text-red-400">{error}</p>}
 
       <button
-        onClick={() => void createOrder()}
-        disabled={loading}
+        onClick={() => create.mutate()}
+        disabled={create.isPending}
         className="mx-auto w-full max-w-sm rounded-xl bg-pink-500 px-6 py-3.5 font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
       >
-        {loading ? "Membuat order..." : `Bayar ${rupiah(pkg.price)}`}
+        {create.isPending ? "Membuat order..." : `Bayar ${rupiah(pkg.price)}`}
       </button>
 
       <p className="text-center text-xs text-neutral-600">
